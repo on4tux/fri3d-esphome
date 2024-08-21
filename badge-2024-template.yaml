@@ -1,0 +1,415 @@
+## - 1 - Voeg jouw badge toe aan ESPHome
+
+## Copieer onderstaande code naar het clipboard (Tip: selecteer alles en gebruik Ctrl-c)
+## Klik '+ New Device' in het ESPHome dashboard
+## New Device: Klik 'Continue'
+## Create configuration: Geef jouw configuratie een naam, gebruik hiervoor 'badge-XXX' waarbij je XXX vervangt met jouw kamer
+## Select your device type: Kies 'ESP32'
+## Configuration created: Kies 'skip'
+## Vind de nieuwe configuratie in het ESPHome dashboard en klik 'edit'
+## Selecteer de huidige code en overschrijf deze met de inhoud van het clipboard
+
+## Vervang XXX met jouw kamer (vb: badkamer)
+substitutions:
+  id: demo
+
+esphome:
+  name: badge-${id} 
+  friendly_name: badge ${id}
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+  baud_rate: 0
+  logs:
+    sensor: INFO
+
+api:
+  password: ""
+
+ota:
+  platform: esphome
+  password: ""
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: !secret backup_ssid
+    password: !secret backup_password
+
+captive_portal:
+
+web_server:
+  port: 80
+
+text_sensor:
+- platform: wifi_info
+  ip_address:
+    name: "Badge IP Address"
+    id: ip_address
+
+## Klik op INSTALL en kies dan 'Plug into this computer': de code compileert op de ESPHome server. Klik 'Download project' en bewaar het bestand lokaal. Klik 'Open ESPHome Web', dit opent in een nieuwe tab.
+## ESP Device: Klik 'Install'
+## Install your existing ESPHome project: klik 'Choose File' en selecteer het firmware bestand. Klik 'Install'.
+
+
+## - 2 - Voeg jouw badge toe aan Home Assistant
+
+## Surf naar http://home-assistant.home/config/integrations/integration/esphome en klik 'Configure' bij Discovered. Controleer of de naam overeenkomt met jouw kamer.
+## Discovered ESPHome node: klik 'Submit'
+## Success!: klik 'Finish'
+## Kies je kamer ('badge XXXXX') en klik op '1 device'. Je ziet nu het IP adress bij Diagnostic.
+
+
+## - 3 - Voeg een status led toe aan de ESP
+
+## Onderstaande blok gebruikt de light component om de status led toe te wijzen
+
+# # <code>
+# light:
+#   - platform: status_led
+#     name: "State"
+#     id: "state"
+#     pin:
+#       number: GPIO21
+#       inverted: yes
+# # </code>
+
+## Uncomment bovenstaande blok tussen de <code> tags (Tip: selecteer de lijnen en gebruik Ctrl+'/')
+## Klik op INSTALL en kies dan 'Wirelessly': de code compileert op de ESPHome server en wordt naar de badge gepushed.
+## De rode led op de achterkant gaat langzaam knipperen als er geen verbinding is met Home Assistant en snel als er een fout optreedt.
+## Refresh de Home Assistant device site: klik op de knop 'Status' bij Controls. De led gaat nu branden.
+
+
+## - 4 - Configureer de 5 RGB leds
+
+## Onderstaande blok maakt ook gebruik van de light component om de adresseerbare leds aan te sturen. Deze bevat reeds enkele effecten die we later nodig hebben.
+
+# # <code>
+#  - platform: neopixelbus
+#    type: GRB
+#    variant: WS2812
+#    pin: GPIO12
+#    num_leds: 15
+#    name: "NeoPixel Light"
+#    id: neopixel
+#    effects:
+#      - pulse:
+#      - random:
+#      - strobe:
+#      - strobe:
+#          name: Strobe Red
+#          colors:
+#            - state: true
+#              brightness: 100%
+#              red: 100%
+#              green: 0%
+#              blue: 0%
+#              duration: 500ms
+#            - state: false
+#              duration: 500ms
+#      - strobe:
+#          name: Strobe Green
+#          colors:
+#            - state: true
+#              brightness: 100%
+#              red: 0%
+#              green: 100%
+#              blue: 0%
+#              duration: 500ms
+#            - state: false
+#              duration: 500ms
+#      - strobe:
+#          name: Strobe Blue
+#          colors:
+#            - state: true
+#              brightness: 100%
+#              red: 0%
+#              green: 0%
+#              blue: 100%
+#              duration: 500ms
+#            - state: false
+#              duration: 500ms
+#      - flicker:
+#      - addressable_rainbow:
+#      - addressable_color_wipe:
+#          name: Addressable Color Wipe
+#      - addressable_scan:
+#      - addressable_twinkle:
+#      - addressable_random_twinkle:
+#      - addressable_fireworks:
+#      - addressable_flicker:
+# # </code>
+
+## Uncomment bovenstaande blok, maar zorg ervoor dat de indentatie overeenkomt met het status_led platform. Installeer de code opnieuw.
+## Refresh de Home Assistant device site: klik op de knop 'NeoPixel Light' bij Controls. De leds gaan nu branden.
+
+
+## - 5 - Voeg alle drukknoppen toe
+
+## Onderstaande blok gebruikt de binary_sensor component om alle drukknoppen uit te lezen
+
+# # <code>
+#binary_sensor:
+#  - platform: gpio
+#    name: "A"
+#    pin:
+#      number: GPIO39
+#      mode:
+#        input: true
+#        pullup: true
+#      inverted: true
+#    on_press:
+#      then:
+#        - light.turn_on:
+#            id: neopixel
+#            effect: "pulse"
+#  - platform: gpio
+#    name: "B"
+#    pin:
+#      number: GPIO40
+#      mode:
+#        input: true
+#        pullup: true
+#      inverted: true
+#    on_press:
+#      then:
+#        - light.turn_on:
+#            id: neopixel
+#            effect: "random"
+#  - platform: gpio
+#    name: "X"
+#    pin:
+#      number: GPIO38
+#      mode:
+#        input: true
+#        pullup: true
+#      inverted: true
+#    on_press:
+#      then:
+#        - light.turn_on:
+#            id: neopixel
+#            effect: "strobe"
+#  - platform: gpio
+#    name: "Y"
+#    pin:
+#      number: GPIO41
+#      mode:
+#        input: true
+#        pullup: true
+#      inverted: true
+#    on_press:
+#      then:
+#        - light.turn_on:
+#            id: neopixel
+#            effect: "flicker"
+#  - platform: gpio
+#    name: "menu"
+#    pin:
+#      number: GPIO45
+#      mode:
+#        input: true
+#        pullup: true
+#      inverted: true
+#    on_press:
+#      then:
+#        - light.turn_on:
+#            id: neopixel
+#            effect: "Addressable Color Wipe"
+#  - platform: gpio
+#    name: "start"
+#    pin:
+#      number: GPIO0
+#      mode:
+#        input: true
+#      inverted: true
+#    on_press:
+#      then:
+#        - light.toggle:
+#            id: neopixel
+# # </code>
+
+## Uncomment bovenstaande blok en installeer de code opnieuw.
+## Refresh de Home Assistant device site. Probeer alle drukknoppen: zolang je drukt, licht de 'Button' bij Sensors op. Elke knop bedient een lichteffect, 'start' zet deze aan of uit. 
+
+
+## - 6 - Configureer de infrarood ontvanger
+
+## Onderstaande blok maakt ook gebruik van de binary_sensor om IR codes te detecteren
+
+# # <code>
+#  - platform: remote_receiver
+#    name: "Blaster Buzz"
+#    # protocol 2022
+#    jvc:
+#      data: 0x3802
+#    on_press:
+#      then:
+#        - light.turn_on:
+#            id: neopixel
+#            effect: "Strobe Blue"
+#  - platform: remote_receiver
+#    name: "Blaster Giggle"
+#    # protocol 2022
+#    jvc:
+#      data: 0x5807
+#    on_press:
+#      then:
+#        - light.turn_on:
+#            id: neopixel
+#            effect: "Strobe Green"
+#  - platform: remote_receiver
+#    name: "Blaster Rex"
+#    # protocol 2022
+#    jvc:
+#      data: 0x980D
+#    on_press:
+#      then:
+#        - light.turn_on:
+#            id: neopixel
+#            effect: "Strobe Red"
+
+#remote_receiver:
+#  pin:
+#    number: GPIO11
+#    inverted: true
+#    mode:
+#      input: true
+#      pullup: true
+#  rmt_channel: 4
+#  dump: all
+# # </code>
+
+## Uncomment bovenstaande blok en verander naar het oudere IR protocol indien nodig. Installeer de code opnieuw.
+## Schiet met een blaster op de badge: de leds veranderen naar de kleur van het team waarmee geschoten is.
+
+
+## - 7 - Voeg de joystick toe
+
+## Onderstaande blok gebruikt de sensor component om de waarden van de joystick in te lezen
+
+# # <code>
+#sensor:
+#  - platform: adc
+#    id: joystick_x  
+#    name: "Joystick X axis"  
+#    pin: GPIO01
+#    attenuation: auto
+#    update_interval: 500ms
+#  - platform: adc
+#    id: joystick_y  
+#    name: "Joystick Y axis"  
+#    pin: GPIO03
+#    attenuation: auto
+#    update_interval: 500ms
+# # </code>
+
+## Uncomment bovenstaande blok en installeer de code opnieuw.
+## Refresh de Home Assistant device site. Probeer de joystick: de waarden worden weergegeven als X en Y coordinaten.
+
+
+## - 8 - Laat de CO2 waarde zien op het schermpje
+
+## Onderstaande blok maakt gebruik van de spi en display componenten om een OLED scherm aan te sturen
+
+# # <code>
+#  - platform: homeassistant
+#    id: co2
+#    entity_id: sensor.esp_demo_workshop_co2
+
+#spi:
+#  clk_pin: GPIO7
+#  mosi_pin: GPIO6
+
+#display:
+#  - platform: ili9xxx
+#    model: ST7789V
+#    dimensions:
+#      height: 240
+#      width: 296
+#    transform:
+#      swap_xy: true
+#      mirror_x: false
+#    data_rate: 80MHz
+#    dc_pin: GPIO4
+#    cs_pin: GPIO5
+#    reset_pin: GPIO48
+#    lambda: |-
+#      it.printf(0, 15, id(my_font), TextAlign::BASELINE_LEFT, "CO2: %.1f ppm", id(co2).state);
+
+# graph:
+#   # Show bare-minimum auto-ranged graph
+#   - id: single_temperature_graph
+#     sensor: temperature
+#     duration: 1h
+#     width: 151
+#     height: 51
+
+#font:
+#  - file: "opensans.ttf"
+#    id: my_font
+#    size: 20
+# # </code>
+
+## Uncomment bovenstaande blok en installeer de code opnieuw. De waarde van de CO2 meter verschijnt nu op de display.
+
+
+## - 9 - Configureer de zoemer
+
+## Onderstaande blok maakt gebruik van de switch en rtttl componenten om een starwars tune af te spelen
+
+# # <code>
+#switch:
+#  - platform: template
+#    name: "deurbel"
+#    turn_on_action:
+#      rtttl.play: 'star_wars:d=16,o=5,b=100:4e,4e,4e,8c,p,g,4e,8c,p,g,4e,4p,4b,4b,4b,8c6,p,g,4d#,8c,p,g,4e,8p'
+
+#rtttl:
+#  output: buzzer_output
+#  id: my_rtttl
+#  gain: 0.4
+
+#output:
+# - platform: ledc
+#   pin: GPIO46
+#   id: buzzer_output
+# </code>
+
+## Uncomment bovenstaande blok en installeer de code opnieuw.
+## Refresh de Home Assistant device site: klik op de knop 'deurbel' bij Controls. De starwars tune speelt.
+
+
+## - 10 - Maak een deurbel
+
+## Je kan regels maken in Home Assistant die integrations met elkaar verbinden.
+## - Voeg een automatisatie toe door op de Home Assistant device site op het plus icoontje te klikken naast Automations
+## - Kies bij 'Do something when..' voor 'badge XXX menu turned on' (XXX = jouw kamer)
+## - Laat 'And If' op de standaard waarde
+## - Klik bij 'Then do' op '+ Add action'
+## - Kies 'Device' uit de lijst
+## - Klik op 'Device' en kies 'badge XXX'
+## - Kies 'Turn on badge XXX deurbel'
+## - Klik onderaan op 'SAVE' en geef jouw regel een naam
+
+## Elke keer dat je nu op de menu drukknop duwt, speelt de starwars tune.
+
+
+## Alle badge pinnen;
+
+## Deze staan vermeld op de achterkant van de badge.
+
+# <code>
+# i2c:
+#   sda: GPIO9
+#   scl: GPIO18
+#   scan: true
+#   id: bus_a
+# </code>

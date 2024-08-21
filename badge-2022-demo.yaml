@@ -1,0 +1,144 @@
+substitutions:
+  id: "2022"
+
+esphome:
+  name: badge-${id} 
+  friendly_name: badge ${id}
+
+esp32:
+  board: esp-wrover-kit
+
+logger:
+  level: DEBUG
+  baud_rate: 0
+
+api:
+  password: ""
+
+ota:
+  platform: esphome
+  password: ""
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: !secret backup_ssid
+    password: !secret backup_password
+
+captive_portal:
+
+web_server:
+  port: 80
+
+sensor:
+  - platform: homeassistant
+    id: co2
+    entity_id: sensor.esp_demo_workshop_co2
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+
+display:
+  - platform: ili9xxx
+    model: ST7789V
+    dimensions:
+      height: 240
+      width: 240
+    dc_pin: GPIO33
+    cs_pin: GPIO5
+    lambda: |-
+      it.printf(0, 15, id(my_font), TextAlign::BASELINE_LEFT, "CO2: %.0f ppm", id(co2).state);
+
+font:
+  - file: "opensans.ttf"
+    id: my_font
+    size: 20
+
+light:
+  - platform: neopixelbus
+    type: GRB
+    variant: WS2812
+    pin: GPIO02
+    num_leds: 5
+    name: "NeoPixel Light"
+
+esp32_touch:
+
+remote_receiver:
+  pin:
+    number: GPIO25
+    inverted: true
+    mode:
+      input: true
+      pullup: true
+  rmt_channel: 4
+  dump: all
+
+binary_sensor:
+  - platform: esp32_touch
+    name: "Button0"
+    pin: GPIO27
+    threshold: 1000
+  - platform: esp32_touch
+    name: "Button1"
+    pin: GPIO14
+    threshold: 1000
+  - platform: esp32_touch
+    name: "Button2"
+    pin: GPIO13
+    threshold: 1000
+
+switch:
+  - platform: template
+    name: "deurbel"
+    turn_on_action:
+      rtttl.play: 'star_wars:d=16,o=5,b=100:4e,4e,4e,8c,p,g,4e,8c,p,g,4e,4p,4b,4b,4b,8c6,p,g,4d#,8c,p,g,4e,8p'
+
+rtttl:
+  output: buzzer_output
+  id: my_rtttl
+  gain: 0.4
+
+output:
+ - platform: ledc
+   pin: GPIO32
+   id: buzzer_output
+
+## TODO
+## - validate pinouts
+## - battery monitor
+## - accelerometer
+## - debug button2
+## - test IR RX
+
+## Alle badge pinnen;
+## GPIO2: WS2812 LED
+## GPIO4: Blaster link
+## GPIO5: SPI Clock Select
+## GPIO13: Button2
+## GPIO14: Button1
+## GPIO15: Batterij?
+## GPIO18: SPI Clk
+## GPIO19: SPI?
+## GPIO21: I2C SCL
+## GPIO22: I2C SDA
+## GPIO23: SPI MOSI?
+## GPIO25: IR RX
+## GPIO27: Button0
+## GPIO32: Buzzer
+## GPIO33: SPI DC
+## GPIO34: Batterij?
+## GPIO35: Batterij monitor
+## GPIO36: INT accelero
+
+# <code>
+# i2c:
+#   sda: GPIO22
+#   scl: GPIO21
+#   scan: true
+#   id: bus_a
+# </code>

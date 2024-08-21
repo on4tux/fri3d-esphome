@@ -1,0 +1,276 @@
+## Important
+## remove grove shield upon initial deployment via usb cable
+
+## Vervang XXX met jouw kamer (vb: badkamer)
+substitutions:
+  id: XXX
+
+esphome:
+  name: esp-${id} 
+  friendly_name: esp ${id}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: INFO
+  # Workaround voor display timeout warning log
+  logs:
+    component: ERROR
+
+api:
+  password: ""
+
+ota:
+  platform: esphome
+  password: ""
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: !secret backup_ssid
+    password: !secret backup_password
+
+captive_portal:
+
+web_server:
+  port: 80
+
+## - 1 - Publiceer IP adres ESP
+
+## Onderstaande blok gebruikt een text_sensor component om het IP adres van de ESP te publiceren in Home Assistant
+
+# # <code>
+# text_sensor:
+# - platform: wifi_info
+#   ip_address:
+#     name: "ESP IP Address"
+#     id: ip_address
+# # </code>
+
+## Uncomment bovenstaande blok tussen de <code> tags (Tip: selecteer de lijnen en gebruik Ctrl+'/')
+## Klik op INSTALL en kies dan 'Wirelessly': de code compileert op de ESPHome server en wordt naar de ESP gepushed.
+## Indien het pushen faalt, kan je op 'retry' klikken. Bij een succesvolle push, klik je op 'STOP'.
+## Surf naar http://home-assistant.home/config/devices/dashboard en kies je kamer ('esp XXXXX') Je ziet nu het IP adress bij Diagnostic.
+## Copy & paste het adres in jouw browser (http://192.168.88.xxx) en surf naar deze site. Je zit nu rechtstreeks op het ESP device en kan het vanaf hier ook bedienen.
+
+
+## - 2 - Voeg een status led toe aan de ESP
+
+## Onderstaande blok gebruikt de light component om de status led toe te wijzen
+
+# # <code>
+# light:
+#   - platform: status_led
+#     name: "Status"
+#     id: state
+#     pin: GPIO26 # Grove D2
+# # </code>
+
+## Sluit een led aan op pin 'D2'. Uncomment bovenstaande blok en installeer de code opnieuw.
+## De led gaat langzaam knipperen als er geen verbinding is met Home Assistant en snel als er een fout optreedt.
+## Refresh de Home Assistant device site: klik op de knop 'Status' bij Controls. De led gaat nu branden.
+
+
+## - 3 - Voeg een led string toe aan de ESP
+
+## Onderstaande blok maakt ook gebruik van de light component om een string adresseerbare leds aan te sturen
+
+# # <code>
+  # - platform: neopixelbus
+  #   name: "NeoPixel Light"
+  #   id: neopixel
+  #   type: BGR
+  #   variant: WS2812
+  #   pin: GPIO25 # Grove D3
+  #   num_leds: 10
+# # </code>
+
+## Sluit de led string aan op 'D3'. Uncomment bovenstaande blok, maar zorg ervoor dat de indentatie overeenkomt met het status_led platform. Installeer de code opnieuw.
+## Refresh de Home Assistant device site: klik op de knop 'NeoPixel Light' bij Controls. De led string gaat nu branden.
+
+
+## - 4 - Gebruik een drukknop om de status led aan te sturen
+
+## Onderstaande blok gebruikt de binary_sensor component om een drukknop uit te lezen
+
+# # <code>
+# binary_sensor:
+#   - platform: gpio
+#     name: "Button"
+#     id: button
+#     pin:
+#       number: GPIO17 # Grove D4
+#       mode:
+#         input: true
+#         pulldown: true
+#     on_press:
+#       then:
+#         - light.toggle:
+#             id: state
+# # </code>
+
+## Sluit de drukknop aan op 'D4'. Uncomment bovenstaande blok en installeer de code opnieuw.
+## Refresh de Home Assistant device site. Druk op de drukknop: zolang je drukt, licht de 'Button' bij Sensors op. De status led gaat bij elke druk aan of uit. 
+
+
+## - 5 - Detecteer beweging door middel van een bewegingssensor
+
+## Onderstaande blok maakt ook gebruik van de binary_sensor component om een PIR bewegingssensor uit te lezen
+
+# # <code>
+  # - platform: gpio
+  #   name: "PIR"
+  #   id: pir
+  #   pin:
+  #     number: GPIO16 # Grove D5
+  #     mode:
+  #       input: true
+  #       pulldown: true
+  #   on_press:
+  #     then:
+  #       - light.turn_on:
+  #           id: neopixel
+  #           red: 1
+  #           green: 0
+  #           blue: 0
+  #   on_release:
+  #     then:
+  #       - light.turn_on:
+  #           id: neopixel
+  #           red: 0
+  #           green: 1
+  #           blue: 0
+# # </code>
+
+## Sluit de PIR sensor aan op 'D5'. Uncomment bovenstaande blok, maar zorg ervoor dat de indentatie overeenkomt met het vorige gpio platform. Installeer de code opnieuw.
+## Refresh de Home Assistant device site: klik op de knop 'NeoPixel Light' bij Controls. Elke keer dat er beweging is, verandert de led string een aantal seconden van groen naar rood.
+
+
+## - 6 - Configureer een servo motor
+
+## Onderstaande blok gebruikt de servo en output componenten om een servo motor te configureren
+
+# # <code>
+# servo:
+#   - id: my_servo
+#     output: pwm_output
+#     transition_length: 3s
+
+# output:
+#   - platform: ledc
+#     id: pwm_output
+#     pin: GPIO27 # Grove D6
+#     frequency: 50 Hz
+# # </code>
+
+## Sluit de motor aan op 'D6'. Uncomment bovenstaande blok en installeer de code opnieuw. Deze motor wordt gebruikt in de volgende stap.
+
+
+## - 7 - Gebruik een potentiometer om de servo motor aan te sturen
+
+## Onderstaande blok gebruikt de sensor component om de waarde van een potentiometer in te lezen
+
+# # <code>
+# sensor:
+#   - platform: adc
+#     name: "Servo"
+#     id: dimmer
+#     pin: GPIO35 # Grove A2
+#     update_interval: 500ms
+#     attenuation: 12db
+#     on_value: 
+#       then:
+#         - servo.write:
+#             id: my_servo
+#             level: !lambda 'return 0.5-x/3.3;'
+# # </code>
+
+## Sluit de potentiometer aan op 'A2'. Uncomment bovenstaande blok en installeer de code opnieuw.
+## Refresh de Home Assistant device site: 'Servo' bij Sensors geeft de waarde van de potentiometer terug, ergens tussen 0 & 3.3V.
+## Draai aan de potentiometer: de motor gaat nu ook bewegen.
+
+
+## - 8 - Maak een weerstation met het meten van temperatuur en vochtigheid
+
+## Onderstaande blok maakt ook gebruik van de sensor component om de waarde van een DHT sensor in te lezen
+
+# # <code>
+#   - platform: dht
+#     pin: GPIO14 # Grove D7
+#     temperature:
+#       name: "Temperatuur"
+#       id: temperature
+#     humidity:
+#       name: "Vochtigheid"
+#       id: humidity
+#     update_interval: 5s
+# # </code>
+
+## Sluit de DHT sensor aan op 'D7'. Uncomment bovenstaande blok, maar zorg ervoor dat de indentatie overeenkomt met het vorige adc platform. Installeer de code opnieuw.
+## Refresh de Home Assistant device site: 'Temperatuur' en 'Vochtigheid' geven de waarden weer die gemeten worden door de DHT sensor.
+
+
+## - 9 - Laat bovenstaande waarden zien op een schermpje
+
+## Onderstaande blok maakt gebruik van de i2c en display componenten om een OLED scherm aan te sturen
+
+# # <code>
+# i2c:
+#   - sda: GPIO21
+#     scl: GPIO22
+#     id: bus
+#     frequency: 800kHz
+
+# font:
+#   - file: "opensans.ttf" # dit bestand staat al op de esphome server
+#     id: my_font
+#     size: 20
+
+# display:
+#   - platform: ssd1306_i2c
+#     model: "SH1107 128x128"
+#     address: 0x3C
+#     external_vcc: true
+#     lambda: |-
+#       it.printf(0, 20, id(my_font), TextAlign::BASELINE_LEFT, "temp: %.1f C", id(temperature).state);
+#       it.printf(0, 40, id(my_font), TextAlign::BASELINE_LEFT, "hum: %.1f %%", id(humidity).state);
+# # </code>
+
+## Sluit de OLED display aan op een 'I2C' pin. Uncomment bovenstaande blok en installeer de code opnieuw. De temperatuur en vochtigheid verschijnen nu ook op het schermpje.
+
+
+## - 10 - Gebruik jouw drukknop ook om een lichteffect te wijzigen
+
+## Je kan regels maken in Home Assistant die integrations met elkaar verbinden. Je hebt naast een ESP device ook een WLED device, die een langere RGB led string aanstuurt.
+## - Voeg een automatisatie toe door op de HOme Assistand device site op het plus icoontje te klikken naast Automations
+## - Kies bij 'Do something when..' voor 'esp XXX Button turned on' (XXX = jouw kamer)
+## - Laat 'And If' op de standaard waarde
+## - Klik bij 'Then do' op '+ Add action'
+## - Kies 'Device' uit de lijst
+## - Klik op 'Device' en kies 'wled XXX'
+## - Verander de standaard actie van 'Turn off wled XXX' naar 'Change wled XXX Preset to next option'
+## - Klik onderaan op 'SAVE' en geef jouw regel een naam
+
+## Elke keer dat je nu op jouw drukknop duwt, gaat jouw langere RGB led string een ander effect laten zien
+
+
+## Optioneel: voeg de ESP en WLED toe aan jouw kamer dashboard
+
+## Alle ESP32 Grove pinnen;
+## A0: GPIO2
+## A1: GPIO4
+## A2: GPIO35
+## A3: GPIO34
+## D2: GPIO26
+## D3: GPIO25
+## D4: GPIO17
+## D5: GPIO16
+## D6: GPIO27
+## D7: GPIO14
+## D8: GPIO12
