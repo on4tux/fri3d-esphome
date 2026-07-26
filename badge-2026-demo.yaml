@@ -1,0 +1,852 @@
+esphome:
+  name: fri3d-badge-2026
+  friendly_name: "Fri3d Camp 2026 Badge"
+  comment: >
+    Pin map sourced from the official firmware (fri3d_2026.py, badge_2026_fw
+    main.c) - see repo links below. Flashing this REPLACES MicroPythonOS.
+    Second MCU (CH32X035 IO-expander, I2C 0x50) is handled separately - see
+    the CH32X035 section below.
+  # esphome.on_boot used to live here (aux power / LCD reset release /
+  # brightness / IMU init). Conclusively proven dead: even ESP_LOGE as the
+  # very first statement never appeared in a genuine cold-boot log, across
+  # multiple tests. Removed entirely - the "Badge AUX 3V3 Power" and
+  # "LCD Panel Enabled" switches' own restore_mode: RESTORE_DEFAULT_ON
+  # (a completely different, proven-working code path) now cover aux
+  # power/reset/brightness instead, and the IMU self-initializes on its
+  # first poll_imu tick - see switch: and script: blocks below.
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  framework:
+    type: esp-idf
+
+# ---------------------------------------------------------------------------
+# Wi-Fi / API / OTA - matches the convention used by the other devices in
+# this ESPHome dashboard (e.g. kel-kincony-licht, kel-p1-pro): plain api:
+# with no encryption, ota: with no password, same wifi_ssid/wifi_password
+# secrets already in use elsewhere.
+# ---------------------------------------------------------------------------
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+
+ota:
+  - platform: esphome
+
+logger:
+
+# ---------------------------------------------------------------------------
+# FULL ESP32-S3 PIN MAP
+# (every GPIO the official firmware assigns a function to)
+# ---------------------------------------------------------------------------
+substitutions:
+  pin_boot_button: GPIO0     # BOOT/START button - active LOW, pull-up
+  pin_mic_adc: GPIO1         # Headset mic, analog input (ADC1)
+  pin_i2s_sck: GPIO2         # I2S BCLK, shared headset/communicator audio path
+  pin_lcd_dc: GPIO4          # ST7789 LCD data/command select
+  pin_lcd_cs: GPIO5          # ST7789 LCD chip select
+  pin_spi_mosi: GPIO6        # Shared SPI bus: display + microSD + LoRa
+  pin_spi_sck: GPIO7
+  pin_spi_miso: GPIO8
+  pin_i2c0_sda: GPIO9        # I2C bus 0: touch (CST816S), IMU (LSM6DSO), SAO/ToF add-on
+  pin_badge_link: GPIO10     # Badge Link / Blaster connector (rarely used data pin)
+  pin_ir_rx: GPIO11          # IR receiver (mini blaster / noisycricket add-on)
+  pin_neopixel: GPIO12       # 5x WS2812 status LEDs
+  pin_touch_int: GPIO13      # Touch panel interrupt line (CST816S)
+  pin_sd_cs: GPIO14          # microSD card chip select (shared SPI bus)
+  pin_i2s_sd_in: GPIO15      # I2S mic data in (communicator add-on mic)
+  pin_i2s_sd: GPIO16         # I2S speaker data out (shared)
+  pin_i2s_mck: GPIO17        # I2S master clock (shared) / mic bit clock
+  pin_i2c0_scl: GPIO18       # I2C bus 0 clock
+  pin_ir_tx: GPIO21          # IR transmitter (mini blaster / noisycricket add-on)
+  pin_expander_int: GPIO3    # CH32X035 interrupt line (coprocessor PC17). Stock firmware
+                             # leaves this disconnected ("MicroPython interrupts are
+                             # unreliable under high load" per its own source comment) -
+                             # that's a MicroPython limitation, not a hardware one, so
+                             # ESPHome wires it up below for instant button/joystick response.
+  pin_buzzer: GPIO38         # PWM buzzer / RTTTL tone output
+  pin_i2c1_sda: GPIO39       # I2C bus 1: link to CH32X035 IO-expander coprocessor
+  pin_lora_a: GPIO40         # LoRa SX1262 (SPI CS, per stock firmware)
+  pin_lora_b: GPIO41         # LoRa SX1262 (busy/IRQ, per stock firmware)
+  pin_i2c1_scl: GPIO42       # I2C bus 1 clock: link to CH32X035 IO-expander coprocessor
+  pin_uart_tx: GPIO43        # UART2 TX -> Communicator add-on keyboard
+  pin_uart_rx: GPIO44        # UART2 RX <- Communicator add-on keyboard
+  pin_lora_c: GPIO45         # LoRa SX1262 (DIO, per stock firmware)
+  pin_lora_rf_switch: GPIO46 # LoRa antenna RF switch enable (input-only strapping pin on S3!)
+  pin_i2s_ws: GPIO47         # I2S word select / LRCLK (shared)
+
+# ---------------------------------------------------------------------------
+# I2C buses
+# ---------------------------------------------------------------------------
+i2c:
+  - id: bus_sensors
+    sda: ${pin_i2c0_sda}
+    scl: ${pin_i2c0_scl}
+    scan: true
+    # Known devices on this bus in stock firmware:
+    #   CST816S touch controller, LSM6DSO IMU (addr 0x6A), ToF add-on sensor
+
+  - id: bus_expander
+    sda: ${pin_i2c1_sda}
+    scl: ${pin_i2c1_scl}
+    scan: true
+    # CH32X035 IO-expander coprocessor lives here at address 0x50.
+    # It uses a custom register protocol (not a stock ESPHome component) -
+    # see the reserved pin list at the bottom of this file for what it exposes.
+
+# ---------------------------------------------------------------------------
+# SPI bus (shared: display, microSD, LoRa)
+# ---------------------------------------------------------------------------
+spi:
+  - id: bus_spi
+    mosi_pin: ${pin_spi_mosi}
+    miso_pin: ${pin_spi_miso}
+    clk_pin: ${pin_spi_sck}
+    # Display (ST7789V) and microSD (cs=${pin_sd_cs}) share this bus.
+
+# ---------------------------------------------------------------------------
+# LCD (ST7789V, 240x320) + Fri3d Camp logo splash. Reset and backlight are
+# driven by the CH32X035 coprocessor (see esphome.on_boot above and the
+# "LCD Brightness" number further down), not a free GPIO, so reset_pin is
+# intentionally omitted - the mipi_spi driver handles the rest natively.
+# Save fri3d_logo.png next to this YAML in the ESPHome dashboard.
+# ---------------------------------------------------------------------------
+image:
+  - platform: file
+    file: fri3d_logo.png
+    id: fri3d_logo
+    type: BINARY
+
+display:
+  - platform: mipi_spi
+    model: ST7789V
+    id: badge_display
+    cs_pin: ${pin_lcd_cs}
+    dc_pin: ${pin_lcd_dc}
+    color_order: bgr
+    invert_colors: true
+    update_interval: 1s
+    # Every content/color change (image, text, plain fill, invert true/false,
+    # update_interval never/1s) produced the exact same pitch-black result
+    # after the reset-timing fix - meaning the generic ST7789V preset's init
+    # sequence (reset, sleep-out, color mode, orientation, display-on) isn't
+    # enough for THIS panel. Pulled the real init sequence straight from the
+    # confirmed-working driver for this exact hardware:
+    #   https://github.com/MicroPythonOS/MicroPythonOS/blob/main/internal_filesystem/lib/drivers/display/st7789/_st7789_init.py
+    # It includes a block of panel-specific voltage/gamma tuning commands
+    # (porch control, gate/VCOM voltages, power control, two 14-byte gamma
+    # curves) that are specific to how this LC panel was bonded to the
+    # ST7789V driver chip - not something a generic chip preset can know.
+    # Without correct values here, some panels simply never respond to
+    # pixel data at all, which matches everything we've seen. init_sequence
+    # entries run after the model's own preset commands.
+    init_sequence:
+      - [ 0xB2, 0x0C, 0x0C, 0x00, 0x33, 0x33 ]  # PORCTRL - porch control
+      - [ 0xB7, 0x35 ]                          # GCTRL - gate control
+      - [ 0xBB, 0x32 ]                          # VCOMS - VCOM setting
+      - [ 0xC0, 0x0C ]                          # LCMCTRL - LCM control
+      - [ 0xC2, 0x01 ]                          # VDVVRHEN
+      - [ 0xC3, 0x15 ]                          # VRHS - VRH set
+      - [ 0xC4, 0x20 ]                          # VDVSET - VDV set
+      - [ 0xC6, 0x05 ]                          # FRCTR2 - frame rate
+      - [ 0xD0, 0xA4, 0xA1 ]                    # PWCTRL1 - power control
+      - [ 0xE0, 0xD0, 0x08, 0x0E, 0x09, 0x09, 0x05, 0x31, 0x33, 0x48, 0x17, 0x14, 0x15, 0x31, 0x34 ]  # PGC - positive gamma
+      - [ 0xE1, 0xD0, 0x08, 0x0E, 0x09, 0x09, 0x15, 0x31, 0x33, 0x48, 0x17, 0x14, 0x15, 0x31, 0x34 ]  # NGC - negative gamma
+    # Logo splash commented out for now (working - restore this to bring it
+    # back) since lvgl: below owns this display's rendering instead:
+    #   lambda: |-
+    #     it.fill(Color::BLACK);
+    #     it.image(it.get_width() / 2, it.get_height() / 2, id(fri3d_logo), ImageAlign::CENTER);
+
+# ---------------------------------------------------------------------------
+# Touchscreen (CST816S on bus_sensors, addr 0x15). The earlier "SCL held
+# low" / "found no devices" bus scan failure on this bus may just be this
+# chip's known quirk rather than a dead bus - ESPHome's own cst816 docs note
+# CST816S variants "do not respond to i2c commands except after touches are
+# registered," which is exactly why skip_probe exists. Worth testing before
+# assuming it's a hardware fault. No dedicated reset pin per the stock
+# driver (touch interrupt on GPIO13 is documented there but never actually
+# wired up), so reset_pin is left out here too.
+# ---------------------------------------------------------------------------
+touchscreen:
+  - platform: cst816
+    id: badge_touch
+    i2c_id: bus_sensors
+    interrupt_pin: ${pin_touch_int}
+    skip_probe: true
+
+# ---------------------------------------------------------------------------
+# IMU (LSM6DSO, bus_sensors, addr 0x6A). NOT using ESPHome's built-in
+# `motion: platform: lsm6ds` - its chip-detection table has a real bug:
+#   static const struct {...} CHIP_IDS[] = {{0x69, "LSMDSO"}, {0x6A, "LSM6DS3"}};
+# Real WHO_AM_I values per ST's datasheet are 0x69 for LSM6DS3 and 0x6C for
+# LSM6DSO - the table above is missing 0x6C entirely and has 0x6A mislabeled
+# (0x6A is this chip's I2C bus address, not its WHO_AM_I register value,
+# apparently conflated by whoever wrote that table). Fri3d's own firmware
+# source confirms this exact chip returns WHO_AM_I 0x6C, which the built-in
+# driver doesn't recognize and rejects with "Unknown WHO_AM_I value".
+# Worth reporting upstream, but in the meantime this reads the accelerometer
+# directly over I2C using the exact same register map, bypassing the buggy
+# chip-ID gate entirely - same approach as the CH32X035 coprocessor. The
+# imu_accel_x/y/z globals and init_imu/poll_imu scripts live down in the
+# globals:/script: blocks below (alongside the CH32X035 ones), rather than
+# a second globals:/script: key, which YAML would silently collapse to just
+# the last one. init_imu runs once at the end of esphome.on_boot above;
+# poll_imu is called every 200ms from the interval: block below.
+# Registers/scale factors verified against ESPHome's own lsm6ds.cpp source
+# (esphome/components/lsm6ds/lsm6ds.cpp) and the LSM6DSO datasheet.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# LVGL: single button that toggles the status LEDs.
+#
+# "Button A" (physical badge button) is also wired to the same toggle
+# below (see binary_sensor), as a fallback in case the touchscreen above
+# doesn't come up cleanly - so the button is usable either way.
+# ---------------------------------------------------------------------------
+lvgl:
+  displays:
+    - badge_display
+  touchscreens:
+    - badge_touch
+  rotation: 270
+  pages:
+    - id: main_page
+      widgets:
+        - button:
+            id: led_toggle_button
+            width: 140
+            height: 36
+            x: 5
+            y: 5
+            widgets:
+              - label:
+                  id: led_toggle_label
+                  text: "Toggle LEDs"
+            on_click:
+              - light.toggle: status_leds
+
+        # Demo screen: every IO on the badge, in one scrollable list.
+        # Values are refreshed by update_demo_labels (see script: block),
+        # called from a 250ms interval - reads straight from the same
+        # globals the CH32X035/IMU polling scripts already keep current,
+        # not a separate polling path of its own.
+        - obj:
+            id: io_list
+            x: 0
+            y: 46
+            width: 320
+            height: 194
+            scrollable: true
+            pad_all: 4
+            layout:
+              type: FLEX
+              flex_flow: COLUMN
+              pad_row: 2
+            widgets:
+              - label: {id: lbl_boot_button, text: "Boot Button: --"}
+              - label: {id: lbl_button_x, text: "Button X: --"}
+              - label: {id: lbl_button_y, text: "Button Y: --"}
+              - label: {id: lbl_button_a, text: "Button A: --"}
+              - label: {id: lbl_button_b, text: "Button B: --"}
+              - label: {id: lbl_button_menu, text: "Button Menu: --"}
+              - label: {id: lbl_joy_up, text: "Joystick Up: --"}
+              - label: {id: lbl_joy_down, text: "Joystick Down: --"}
+              - label: {id: lbl_joy_left, text: "Joystick Left: --"}
+              - label: {id: lbl_joy_right, text: "Joystick Right: --"}
+              - label: {id: lbl_usb_plugged, text: "USB Plugged: --"}
+              - label: {id: lbl_charging, text: "Charging: --"}
+              - label: {id: lbl_battery, text: "Battery Raw: --"}
+              - label: {id: lbl_usb_voltage, text: "USB Voltage Raw: --"}
+              - label: {id: lbl_multimeter, text: "Multimeter Raw: --"}
+              - label: {id: lbl_accel_x, text: "Accel X: --"}
+              - label: {id: lbl_accel_y, text: "Accel Y: --"}
+              - label: {id: lbl_accel_z, text: "Accel Z: --"}
+
+# ---------------------------------------------------------------------------
+# UART (Communicator add-on keyboard, when attached)
+# ---------------------------------------------------------------------------
+uart:
+  id: uart_communicator
+  tx_pin: ${pin_uart_tx}
+  rx_pin: ${pin_uart_rx}
+  baud_rate: 115200
+
+# ---------------------------------------------------------------------------
+# CH32X035 IO-expander coprocessor (bus_expander, I2C addr 0x50)
+#
+# There's no stock ESPHome component for this chip's protocol, so it's done
+# here with plain I2C register reads/writes in lambdas - no external
+# component needed. Register map reverse-sourced from the real driver:
+#   https://github.com/MicroPythonOS/MicroPythonOS/blob/main/internal_filesystem/lib/drivers/fri3d/expander.py
+#   https://github.com/Fri3dCamp/badge_2026_fw/blob/main/src/main.c
+#
+#   0x04 (2 bytes)  INPUTS  - bitfield, see mask table below
+#   0x08 (10 bytes) ANALOG  - 5x uint16 LE: ain0, battery, usb, joy_y, joy_x (raw 12-bit ADC)
+#   0x12 (2 bytes)  LCD_BRIGHTNESS - uint16 LE, 0-100, read/write
+#   0x14 (2 bytes)  DEBUG_LED      - uint16 LE, 0-100, read/write
+#   0x16 (1 byte)   CONFIG  - bits: bit4=lora_reset bit3=remap(SWD!) bit2=reboot(bootloader!)
+#                             bit1=lcd_reset bit0=aux_power_3v3
+#
+# INPUTS bit masks (1 = active):
+#   0x0800 usb_plugged   0x0400 joy_right    0x0200 joy_left   0x0100 joy_down
+#   0x0080 joy_up        0x0040 button_menu  0x0020 button_b   0x0010 button_a
+#   0x0008 button_y      0x0004 button_x     0x0002 charger_standby
+#   0x0001 charger_charging
+#
+# NOTE: bit3 (remap) switches the I2C pins to SWD programming mode and bit2
+# (reboot) drops the coprocessor into its USB/UART bootloader - both are left
+# undocumented as toggles below since flipping them stops the expander from
+# responding until the badge is power-cycled. Battery/USB readings are raw
+# 12-bit ADC counts (0-4095); add a `filters: - lambda: return x * SCALE;`
+# once you've measured your own reference voltage - no calibration constant
+# for the 2026 board's divider is published anywhere yet.
+#
+# Polling strategy: the CH32X035 pulses GPIO3 HIGH the instant any digital
+# input changes (button/joystick edge), so that drives an immediate read via
+# the interrupt-triggered script below. A slow 1s interval is kept as a
+# fallback in case a pulse is ever missed, and to keep the analog channels
+# (joystick position, battery, USB, multimeter) refreshed even when nothing
+# digital has changed.
+# ---------------------------------------------------------------------------
+globals:
+  - id: exp_inputs
+    type: uint16_t
+    restore_value: false
+    initial_value: '0'
+  - id: exp_ain0
+    type: uint16_t
+    restore_value: false
+    initial_value: '0'
+  - id: exp_battery
+    type: uint16_t
+    restore_value: false
+    initial_value: '0'
+  - id: exp_usb
+    type: uint16_t
+    restore_value: false
+    initial_value: '0'
+  - id: exp_joy_x
+    type: uint16_t
+    restore_value: false
+    initial_value: '0'
+  - id: exp_joy_y
+    type: uint16_t
+    restore_value: false
+    initial_value: '0'
+  - id: exp_config
+    type: uint8_t
+    restore_value: false
+    initial_value: '0x01' # matches stock firmware boot default: aux power on, everything else off
+  - id: imu_accel_x
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+  - id: imu_accel_y
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+  - id: imu_accel_z
+    type: float
+    restore_value: false
+    initial_value: '0.0'
+  - id: imu_initialized
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+script:
+  - id: poll_expander
+    mode: restart
+    then:
+      - lambda: |-
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_expander));
+          dev.set_i2c_address(0x50);
+
+          uint8_t in_buf[2];
+          if (dev.read_register(0x04, in_buf, 2) == i2c::ERROR_OK) {
+            id(exp_inputs) = in_buf[0] | (in_buf[1] << 8);
+          }
+
+          uint8_t an_buf[10];
+          if (dev.read_register(0x08, an_buf, 10) == i2c::ERROR_OK) {
+            id(exp_ain0)    = an_buf[0] | (an_buf[1] << 8);
+            id(exp_battery) = an_buf[2] | (an_buf[3] << 8);
+            id(exp_usb)     = an_buf[4] | (an_buf[5] << 8);
+            id(exp_joy_y)   = an_buf[6] | (an_buf[7] << 8);
+            id(exp_joy_x)   = an_buf[8] | (an_buf[9] << 8);
+          }
+
+  # init_imu used to be a separate script called from esphome.on_boot, which
+  # turned out to never actually run. Merged into poll_imu instead, gated
+  # by imu_initialized so it only does the setup sequence once - driven by
+  # the interval: block below, a mechanism already proven to work reliably.
+  - id: poll_imu
+    mode: restart
+    then:
+      - lambda: |-
+          if (!id(imu_initialized)) {
+            id(imu_initialized) = true;
+            i2c::I2CDevice setup_dev;
+            setup_dev.set_i2c_bus(id(bus_sensors));
+            setup_dev.set_i2c_address(0x6A);
+            uint8_t sw_reset = 0x01;             // CTRL3_C: SW_RESET
+            setup_dev.write_register(0x12, &sw_reset, 1);
+            delay(5);
+            uint8_t ctrl3_c = 0x44;               // CTRL3_C: IF_INC | BDU
+            setup_dev.write_register(0x12, &ctrl3_c, 1);
+            uint8_t ctrl1_xl = 0x48;              // CTRL1_XL: 104Hz, +/-4g
+            setup_dev.write_register(0x10, &ctrl1_xl, 1);
+            uint8_t ctrl2_g = 0x5C;                // CTRL2_G: 208Hz, +/-2000dps
+            setup_dev.write_register(0x11, &ctrl2_g, 1);
+            uint8_t zero = 0x00;
+            setup_dev.write_register(0x15, &zero, 1);    // CTRL6_C: accel high-perf mode
+            setup_dev.write_register(0x16, &zero, 1);    // CTRL7_G: gyro high-perf mode
+          }
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_sensors));
+          dev.set_i2c_address(0x6A);
+          // Burst read gyro XYZ (0x22-0x27) then accel XYZ (0x28-0x2D) - 12 bytes total.
+          uint8_t raw[12];
+          if (dev.read_bytes(0x22, raw, 12)) {  // read_bytes() returns bool, not ErrorCode
+            int16_t ax = (int16_t) ((raw[7] << 8) | raw[6]);
+            int16_t ay = (int16_t) ((raw[9] << 8) | raw[8]);
+            int16_t az = (int16_t) ((raw[11] << 8) | raw[10]);
+            // 0.122 mg/LSB at +/-4g, converted to g.
+            id(imu_accel_x) = ax * 0.000122f;
+            id(imu_accel_y) = ay * 0.000122f;
+            id(imu_accel_z) = az * 0.000122f;
+          }
+
+  # Refreshes the "io_list" demo screen (see lvgl: above). Reads straight
+  # from the same globals poll_expander/poll_imu already keep current - this
+  # script doesn't touch I2C itself, just re-renders labels from whatever
+  # the last poll left in memory.
+  - id: update_demo_labels
+    then:
+      - lvgl.label.update:
+          id: lbl_boot_button
+          text: !lambda 'return id(boot_button).state ? std::string("Boot Button: ON") : std::string("Boot Button: OFF");'
+      - lvgl.label.update:
+          id: lbl_button_x
+          text: !lambda 'return (id(exp_inputs) & 0x0004) ? std::string("Button X: ON") : std::string("Button X: OFF");'
+      - lvgl.label.update:
+          id: lbl_button_y
+          text: !lambda 'return (id(exp_inputs) & 0x0008) ? std::string("Button Y: ON") : std::string("Button Y: OFF");'
+      - lvgl.label.update:
+          id: lbl_button_a
+          text: !lambda 'return (id(exp_inputs) & 0x0010) ? std::string("Button A: ON") : std::string("Button A: OFF");'
+      - lvgl.label.update:
+          id: lbl_button_b
+          text: !lambda 'return (id(exp_inputs) & 0x0020) ? std::string("Button B: ON") : std::string("Button B: OFF");'
+      - lvgl.label.update:
+          id: lbl_button_menu
+          text: !lambda 'return (id(exp_inputs) & 0x0040) ? std::string("Button Menu: ON") : std::string("Button Menu: OFF");'
+      - lvgl.label.update:
+          id: lbl_joy_up
+          text: !lambda 'return (id(exp_inputs) & 0x0080) ? std::string("Joystick Up: ON") : std::string("Joystick Up: OFF");'
+      - lvgl.label.update:
+          id: lbl_joy_down
+          text: !lambda 'return (id(exp_inputs) & 0x0100) ? std::string("Joystick Down: ON") : std::string("Joystick Down: OFF");'
+      - lvgl.label.update:
+          id: lbl_joy_left
+          text: !lambda 'return (id(exp_inputs) & 0x0200) ? std::string("Joystick Left: ON") : std::string("Joystick Left: OFF");'
+      - lvgl.label.update:
+          id: lbl_joy_right
+          text: !lambda 'return (id(exp_inputs) & 0x0400) ? std::string("Joystick Right: ON") : std::string("Joystick Right: OFF");'
+      - lvgl.label.update:
+          id: lbl_usb_plugged
+          text: !lambda 'return (id(exp_inputs) & 0x0800) ? std::string("USB Plugged: YES") : std::string("USB Plugged: NO");'
+      - lvgl.label.update:
+          id: lbl_charging
+          text: !lambda 'return (id(exp_inputs) & 0x0001) ? std::string("Charging: YES") : std::string("Charging: NO");'
+      - lvgl.label.update:
+          id: lbl_battery
+          text: !lambda 'return str_sprintf("Battery Raw: %u", id(exp_battery));'
+      - lvgl.label.update:
+          id: lbl_usb_voltage
+          text: !lambda 'return str_sprintf("USB Voltage Raw: %u", id(exp_usb));'
+      - lvgl.label.update:
+          id: lbl_multimeter
+          text: !lambda 'return str_sprintf("Multimeter Raw: %u", id(exp_ain0));'
+      - lvgl.label.update:
+          id: lbl_accel_x
+          text: !lambda 'return str_sprintf("Accel X: %.2f g", id(imu_accel_x));'
+      - lvgl.label.update:
+          id: lbl_accel_y
+          text: !lambda 'return str_sprintf("Accel Y: %.2f g", id(imu_accel_y));'
+      - lvgl.label.update:
+          id: lbl_accel_z
+          text: !lambda 'return str_sprintf("Accel Z: %.2f g", id(imu_accel_z));'
+
+# Fallback poll (analog refresh + missed-pulse safety net) - the fast path is
+# the GPIO3 interrupt binary_sensor further down, which calls this same script.
+interval:
+  - interval: 1s
+    then:
+      - script.execute: poll_expander
+  # Was 200ms - bus_sensors (shared with the touchscreen) has been flaky
+  # since the very first boot log (SCL held low, inconsistent detection),
+  # and hammering it at 5x/s was contributing to real I2C software timeouts
+  # and both the touchscreen and this interval getting flagged for taking
+  # too long. 1s gives the touchscreen's own bus activity more breathing
+  # room; the accelerometer sensors' own delta+throttle filters already
+  # mean HA doesn't need faster-than-1s data anyway.
+  - interval: 1s
+    then:
+      - script.execute: poll_imu
+  - interval: 250ms
+    then:
+      - script.execute: update_demo_labels
+
+# ---------------------------------------------------------------------------
+# Status LEDs: 5x WS2812 NeoPixels
+# ---------------------------------------------------------------------------
+light:
+  - platform: esp32_rmt_led_strip
+    id: status_leds
+    name: "Status LEDs"
+    pin: ${pin_neopixel}
+    num_leds: 5
+    chipset: ws2812
+    rgb_order: GRB
+
+# ---------------------------------------------------------------------------
+# Buzzer (PWM output + RTTTL tone player, matches how the stock firmware uses it)
+# ---------------------------------------------------------------------------
+output:
+  - platform: ledc
+    id: buzzer_pwm
+    pin: ${pin_buzzer}
+
+rtttl:
+  output: buzzer_pwm
+  id: buzzer_rtttl
+
+# ---------------------------------------------------------------------------
+# BOOT/START button
+# ---------------------------------------------------------------------------
+binary_sensor:
+  - platform: gpio
+    id: boot_button
+    name: "Boot Button"
+    pin:
+      number: ${pin_boot_button}
+      mode: INPUT_PULLUP
+      inverted: true
+
+  # --- CH32X035 expander interrupt line (PC17 -> GPIO3) ---
+  # Not exposed to HA (internal: true) - just triggers an immediate re-poll
+  # the instant a button/joystick edge happens, instead of waiting for the
+  # 1s fallback interval.
+  - platform: gpio
+    id: expander_int_raw
+    internal: true
+    pin:
+      number: ${pin_expander_int}
+      mode: INPUT
+    on_press:
+      - script.execute: poll_expander
+    on_release:
+      - script.execute: poll_expander
+
+  # --- CH32X035 expander: buttons, joystick, USB/charger status ---
+  - platform: template
+    name: "Button X"
+    lambda: 'return (id(exp_inputs) & 0x0004) != 0;'
+  - platform: template
+    name: "Button Y"
+    lambda: 'return (id(exp_inputs) & 0x0008) != 0;'
+  - platform: template
+    name: "Button A"
+    lambda: 'return (id(exp_inputs) & 0x0010) != 0;'
+    # Stand-in for the on-screen button's touch input until the touch
+    # controller is working - same action the LVGL button's on_click fires.
+    on_press:
+      - light.toggle: status_leds
+  - platform: template
+    name: "Button B"
+    lambda: 'return (id(exp_inputs) & 0x0020) != 0;'
+  - platform: template
+    name: "Button Menu"
+    lambda: 'return (id(exp_inputs) & 0x0040) != 0;'
+  - platform: template
+    name: "Joystick Up"
+    lambda: 'return (id(exp_inputs) & 0x0080) != 0;'
+  - platform: template
+    name: "Joystick Down"
+    lambda: 'return (id(exp_inputs) & 0x0100) != 0;'
+  - platform: template
+    name: "Joystick Left"
+    lambda: 'return (id(exp_inputs) & 0x0200) != 0;'
+  - platform: template
+    name: "Joystick Right"
+    lambda: 'return (id(exp_inputs) & 0x0400) != 0;'
+  - platform: template
+    name: "USB Plugged"
+    device_class: plug
+    lambda: 'return (id(exp_inputs) & 0x0800) != 0;'
+  - platform: template
+    name: "Charger Standby"
+    lambda: 'return (id(exp_inputs) & 0x0002) != 0;'
+  - platform: template
+    name: "Charger Charging"
+    device_class: battery_charging
+    lambda: 'return (id(exp_inputs) & 0x0001) != 0;'
+
+# ---------------------------------------------------------------------------
+# Headset mic - raw ADC only; needs calibration/DSP upstream to be meaningful
+# ---------------------------------------------------------------------------
+sensor:
+  - platform: adc
+    id: mic_adc_raw
+    name: "Headset Mic Raw"
+    pin: ${pin_mic_adc}
+    update_interval: 60s
+
+  # --- IMU (LSM6DSO on bus_sensors, raw I2C - see globals/script above) ---
+  # Polled at 200ms - without a delta filter this alone would be a steady
+  # stream of state updates, same problem the joystick sensors had. 0.05G
+  # ignores sensor noise while at rest, still catches real movement.
+  - platform: template
+    name: "Accelerometer X"
+    lambda: 'return id(imu_accel_x);'
+    update_interval: 1s
+    unit_of_measurement: "g"
+    filters:
+      - delta: 0.3
+      - throttle: 2s
+  - platform: template
+    name: "Accelerometer Y"
+    lambda: 'return id(imu_accel_y);'
+    update_interval: 1s
+    unit_of_measurement: "g"
+    filters:
+      - delta: 0.3
+      - throttle: 2s
+  - platform: template
+    name: "Accelerometer Z"
+    lambda: 'return id(imu_accel_z);'
+    update_interval: 1s
+    unit_of_measurement: "g"
+    filters:
+      - delta: 0.3
+      - throttle: 2s
+
+  # --- CH32X035 expander: analog channels (raw 12-bit ADC, 0-4095) ---
+  # Template sensors publish every update_interval regardless of whether the
+  # value actually changed, and raw ADC readings jitter by a few counts even
+  # at rest - without a filter that's a steady stream of near-duplicate state
+  # updates (10/s for the joystick). `delta` only forwards a new value once
+  # it has moved by at least that much, cutting update volume drastically
+  # while still catching real motion/voltage changes. Tune the numbers down
+  # if you need finer resolution, or up if it's still too chatty.
+  - platform: template
+    name: "Multimeter Input Raw"
+    lambda: 'return id(exp_ain0);'
+    update_interval: 1s
+    filters:
+      - delta: 4
+  - platform: template
+    name: "Battery Voltage Raw"
+    lambda: 'return id(exp_battery);'
+    # Battery/USB rails don't need sub-second reporting like the joystick
+    # does - slower polling plus a wider delta cuts a lot of update volume
+    # since these barely move at rest.
+    update_interval: 30s
+    filters:
+      - delta: 20
+  - platform: template
+    name: "USB Voltage Raw"
+    lambda: 'return id(exp_usb);'
+    update_interval: 30s
+    filters:
+      - delta: 20
+  - platform: template
+    name: "Joystick X"
+    lambda: 'return id(exp_joy_x);'
+    update_interval: 100ms
+    filters:
+      - delta: 8
+  - platform: template
+    name: "Joystick Y"
+    lambda: 'return id(exp_joy_y);'
+    update_interval: 100ms
+    filters:
+      - delta: 8
+
+# ---------------------------------------------------------------------------
+# CH32X035 expander: writable controls (LCD brightness, debug LED, power/reset)
+# ---------------------------------------------------------------------------
+number:
+  - platform: template
+    name: "LCD Brightness"
+    min_value: 0
+    max_value: 100
+    step: 1
+    optimistic: true
+    set_action:
+      - lambda: |-
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_expander));
+          dev.set_i2c_address(0x50);
+          uint16_t val = (uint16_t) x;
+          uint8_t buf[2] = { (uint8_t)(val & 0xFF), (uint8_t)((val >> 8) & 0xFF) };
+          dev.write_register(0x12, buf, 2);
+
+  - platform: template
+    name: "Debug LED Brightness"
+    min_value: 0
+    max_value: 100
+    step: 1
+    optimistic: true
+    set_action:
+      - lambda: |-
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_expander));
+          dev.set_i2c_address(0x50);
+          uint16_t val = (uint16_t) x;
+          uint8_t buf[2] = { (uint8_t)(val & 0xFF), (uint8_t)((val >> 8) & 0xFF) };
+          dev.write_register(0x14, buf, 2);
+
+switch:
+  # Both of these need to be ON for normal operation (AUX power feeds the
+  # LCD/LoRa circuits; "panel enabled" releases the ST7789's hardware reset).
+  # restore_mode persists the last commanded state in NVS flash and replays
+  # the matching action at boot - confirmed working on both USB and battery
+  # power, unlike esphome.on_boot (removed, see top of file - it never
+  # actually fired).
+  - platform: template
+    name: "Badge AUX 3V3 Power"
+    optimistic: true
+    assumed_state: false
+    restore_mode: RESTORE_DEFAULT_ON
+    turn_on_action:
+      - lambda: |-
+          id(exp_config) |= 0x01;
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_expander));
+          dev.set_i2c_address(0x50);
+          uint8_t v = id(exp_config);
+          dev.write_register(0x16, &v, 1);
+    turn_off_action:
+      - lambda: |-
+          id(exp_config) &= ~0x01;
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_expander));
+          dev.set_i2c_address(0x50);
+          uint8_t v = id(exp_config);
+          dev.write_register(0x16, &v, 1);
+
+  # Renamed from "LCD Reset (hold low to reset)" - that name was backwards
+  # and confusing: ON is the correct/normal state (reset released), OFF
+  # holds the panel in hardware reset.
+  - platform: template
+    name: "LCD Panel Enabled"
+    optimistic: true
+    assumed_state: false
+    restore_mode: RESTORE_DEFAULT_ON
+    # Also sets brightness=80 here rather than in esphome.on_boot (which
+    # turned out to never actually run - see the top of this file). This
+    # switch's restore_mode is a proven-working boot-time path.
+    turn_on_action:
+      - lambda: |-
+          id(exp_config) |= 0x02;
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_expander));
+          dev.set_i2c_address(0x50);
+          uint8_t v = id(exp_config);
+          dev.write_register(0x16, &v, 1);
+          uint16_t brightness = 80;
+          uint8_t bl_buf[2] = {(uint8_t)(brightness & 0xFF), (uint8_t)((brightness >> 8) & 0xFF)};
+          dev.write_register(0x12, bl_buf, 2);
+    turn_off_action:
+      - lambda: |-
+          id(exp_config) &= ~0x02;
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_expander));
+          dev.set_i2c_address(0x50);
+          uint8_t v = id(exp_config);
+          dev.write_register(0x16, &v, 1);
+
+  - platform: template
+    name: "LoRa Reset (hold low to reset)"
+    optimistic: true
+    assumed_state: false
+    turn_on_action:
+      - lambda: |-
+          id(exp_config) |= 0x10;
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_expander));
+          dev.set_i2c_address(0x50);
+          uint8_t v = id(exp_config);
+          dev.write_register(0x16, &v, 1);
+    turn_off_action:
+      - lambda: |-
+          id(exp_config) &= ~0x10;
+          i2c::I2CDevice dev;
+          dev.set_i2c_bus(id(bus_expander));
+          dev.set_i2c_address(0x50);
+          uint8_t v = id(exp_config);
+          dev.write_register(0x16, &v, 1);
+
+# ---------------------------------------------------------------------------
+# Restart button - lets you trigger a real cold boot from Home Assistant
+# while the ESPHome log viewer is already connected and watching, so you
+# actually capture on_boot's log lines. Opening the log viewer against an
+# already-running device only re-dumps static component config, not the
+# one-shot startup messages - you have to be watching *before* the reset
+# happens.
+# ---------------------------------------------------------------------------
+button:
+  - platform: restart
+    name: "Restart"
+
+# =============================================================================
+# RESERVED / NOT WIRED UP HERE - documented for completeness
+# =============================================================================
+#
+# ESP32-S3 pins referenced above but without a native ESPHome component:
+#   GPIO6/7/8  - shared SPI bus lines (display + LoRa use this bus; microSD
+#                CS is defined but no SD card component is added)
+#   GPIO10     - Badge Link / Blaster connector data pin
+#   GPIO11/21  - IR receive/transmit (mini blaster / noisycricket add-on)
+#   GPIO14     - microSD chip select (ESPHome has no SPI-mode SD component)
+#   GPIO15/16/17/47/2 - I2S audio lines (add an `i2s_audio:` block yourself
+#                if you want speaker/mic playback/recording)
+#   GPIO40/41/45/46   - LoRa SX1262 (no stock ESPHome sx1262 component)
+#
+# CH32X035 coprocessor pins (SEPARATE MCU, reachable only via bus_expander
+# I2C register protocol - address 0x50, source: badge_2026_fw/src/main.c).
+# These ARE now wired up above (binary_sensor/sensor/number/switch blocks
+# using the interval + globals polling loop) rather than left reserved:
+#   PA0  - multimeter analog input (AIN0)          -> "Multimeter Input Raw"
+#   PA5  - joystick X (analog)                      -> "Joystick X"
+#   PA6  - joystick Y (analog)                       -> "Joystick Y"
+#   PA7  - charger "charging" signal                 -> "Charger Charging"
+#   PB0  - charger "standby" signal                   -> "Charger Standby"
+#   PB1  - LoRa reset                                  -> "LoRa Reset" switch
+#   PB3  - debug LED (PWM)                              -> "Debug LED Brightness"
+#   PB6  - AUX 3.3V power rail enable                    -> "Badge AUX 3V3 Power" switch
+#   PB7  - Button X                                       -> "Button X"
+#   PB8  - Button A                                        -> "Button A"
+#   PB9  - Button B                                         -> "Button B"
+#   PB10 - Button Y                                          -> "Button Y"
+#   PB11 - LCD reset                                          -> "LCD Reset" switch
+#   PB12 - LCD backlight (PWM)                                -> "LCD Brightness"
+#   PC0  - battery voltage monitor (ADC)                       -> "Battery Voltage Raw"
+#   PC3  - USB 5V rail monitor (ADC)                            -> "USB Voltage Raw"
+#   PC15 - Button Menu                                           -> "Button Menu"
+#   PC17 - interrupt output -> ESP32-S3 GPIO3, drives the "expander_int_raw"
+#          binary_sensor above for instant polling on any digital change
+#   PC18/PC19 - I2C bus to ESP32-S3 (SDA/SCL, doubles as SWD when remapped -
+#               CONFIG register bit3, intentionally NOT exposed as a switch
+#               above since flipping it breaks I2C comms until power-cycle)
+#
+# Also NOT exposed: CONFIG register bit2 ("reboot"), which drops the
+# coprocessor into its own bootloader - only useful for reflashing its
+# firmware, not something you want a stray switch flip to trigger.
